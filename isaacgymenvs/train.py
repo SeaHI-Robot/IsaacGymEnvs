@@ -32,7 +32,6 @@
 import hydra
 
 from omegaconf import DictConfig, OmegaConf
-from omegaconf import DictConfig, OmegaConf
 
 
 def preprocess_train_config(cfg, config_dict):
