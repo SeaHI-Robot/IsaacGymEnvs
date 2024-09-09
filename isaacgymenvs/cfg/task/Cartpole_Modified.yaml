@@ -1,5 +1,5 @@
 # used to create the object
-name: Cartpole
+name: Cartpole_Modified
 
 physics_engine: ${..physics_engine}
 
@@ -12,6 +12,8 @@ env:
 
   clipObservations: 5.0
   clipActions: 1.0
+
+  randomCommandPosRange: 1
 
   asset:
     assetRoot: "../../assets"

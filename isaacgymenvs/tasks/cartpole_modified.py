@@ -1,39 +1,11 @@
-# Copyright (c) 2018-2023, NVIDIA Corporation
-# All rights reserved.
-#
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-#    list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-#    this list of conditions and the following disclaimer in the documentation
-#    and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-#    contributors may be used to endorse or promote products derived from
-#    this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
 import numpy as np
 import os
 import torch
 
-from isaacgym import gymutil, gymtorch, gymapi
+from isaacgym import gymtorch, gymapi
 from .base.vec_task import VecTask
 
-class Cartpole(VecTask):
+class Cartpole_Modified(VecTask):
 
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
         self.cfg = cfg
@@ -43,8 +15,9 @@ class Cartpole(VecTask):
         self.max_push_effort = self.cfg["env"]["maxEffort"]
         self.max_episode_length = 500
 
-        self.cfg["env"]["numObservations"] = 4
+        self.cfg["env"]["numObservations"] = 5
         self.cfg["env"]["numActions"] = 1
+        self.command_pos_range = self.cfg["env"]["randomCommandPosRange"]
 
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
@@ -52,6 +25,7 @@ class Cartpole(VecTask):
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dof, 2)[..., 1]
+        self.commands = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device, requires_grad=False)
 
     def create_sim(self):
         # set the up axis to be z-up given that assets are y-up by default
@@ -124,7 +98,7 @@ class Cartpole(VecTask):
         cart_pos = self.obs_buf[:, 0]
 
         self.rew_buf[:], self.reset_buf[:] = compute_cartpole_reward(
-            pole_angle, pole_vel, cart_vel, cart_pos,
+            self.commands, pole_angle, pole_vel, cart_vel, cart_pos,
             self.reset_dist, self.reset_buf, self.progress_buf, self.max_episode_length
         )
 
@@ -132,18 +106,19 @@ class Cartpole(VecTask):
         if env_ids is None:
             env_ids = np.arange(self.num_envs)
 
-        self.gym.refresh_dof_state_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim) # 从仿真中获得数据
 
-        self.obs_buf[env_ids, 0] = self.dof_pos[env_ids, 0].squeeze()
-        self.obs_buf[env_ids, 1] = self.dof_vel[env_ids, 0].squeeze()
-        self.obs_buf[env_ids, 2] = self.dof_pos[env_ids, 1].squeeze()
-        self.obs_buf[env_ids, 3] = self.dof_vel[env_ids, 1].squeeze()
+        self.obs_buf[env_ids, 0] = self.dof_pos[env_ids, 0].squeeze() # 小车位置
+        self.obs_buf[env_ids, 1] = self.dof_vel[env_ids, 0].squeeze() # 小车速度
+        self.obs_buf[env_ids, 2] = self.dof_pos[env_ids, 1].squeeze() # 倒立摆角度
+        self.obs_buf[env_ids, 3] = self.dof_vel[env_ids, 1].squeeze() # 倒立摆角速度
+        self.obs_buf[env_ids, 4] = self.commands[env_ids].squeeze()   # 新增的观测 
 
         return self.obs_buf
 
     def reset_idx(self, env_ids):
-        positions = 0.2 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)
-        velocities = 0.5 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5)
+        positions = 1 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # 随机设置位置
+        velocities = 0.5 * (torch.rand((len(env_ids), self.num_dof), device=self.device) - 0.5) # 随机设置速度
 
         self.dof_pos[env_ids, :] = positions[:]
         self.dof_vel[env_ids, :] = velocities[:]
@@ -155,6 +130,8 @@ class Cartpole(VecTask):
 
         self.reset_buf[env_ids] = 0
         self.progress_buf[env_ids] = 0
+
+        self.commands[env_ids] = (torch.rand((len(env_ids), 1), device=self.device) * 2 - 1 ) * self.command_pos_range
 
     def pre_physics_step(self, actions):
         actions_tensor = torch.zeros(self.num_envs * self.num_dof, device=self.device, dtype=torch.float)
@@ -178,12 +155,12 @@ class Cartpole(VecTask):
 
 
 @torch.jit.script
-def compute_cartpole_reward(pole_angle, pole_vel, cart_vel, cart_pos,
+def compute_cartpole_reward(command, pole_angle, pole_vel, cart_vel, cart_pos,
                             reset_dist, reset_buf, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
+    # type: (Tensor, Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
 
     # reward is combo of angle deviated from upright, velocity of cart, and velocity of pole moving
-    reward = 1.0 - pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel)
+    reward = 1.0 -  0.05 * pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel) - 0.75 * torch.abs(command - cart_pos)
 
     # adjust reward for reset agents
     reward = torch.where(torch.abs(cart_pos) > reset_dist, torch.ones_like(reward) * -2.0, reward)
