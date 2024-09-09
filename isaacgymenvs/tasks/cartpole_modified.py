@@ -92,13 +92,14 @@ class Cartpole_Modified(VecTask):
 
     def compute_reward(self):
         # retrieve environment observations from buffer
+        cart_pos = self.obs_buf[:, 0]
+        cart_vel = self.obs_buf[:, 1]
         pole_angle = self.obs_buf[:, 2]
         pole_vel = self.obs_buf[:, 3]
-        cart_vel = self.obs_buf[:, 1]
-        cart_pos = self.obs_buf[:, 0]
+        commands = self.obs_buf[:, 4]
 
         self.rew_buf[:], self.reset_buf[:] = compute_cartpole_reward(
-            self.commands, pole_angle, pole_vel, cart_vel, cart_pos,
+            commands, pole_angle, pole_vel, cart_vel, cart_pos,
             self.reset_dist, self.reset_buf, self.progress_buf, self.max_episode_length
         )
 
