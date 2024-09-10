@@ -2,7 +2,7 @@ import numpy as np
 import os
 import torch
 
-from isaacgym import gymtorch, gymapi
+from isaacgym import gymtorch, gymapi, gymutil
 from .base.vec_task import VecTask
 
 class Cartpole_Modified(VecTask):
@@ -56,7 +56,7 @@ class Cartpole_Modified(VecTask):
         asset_path = os.path.join(asset_root, asset_file)
         asset_root = os.path.dirname(asset_path)
         asset_file = os.path.basename(asset_path)
-
+ 
         asset_options = gymapi.AssetOptions()
         asset_options.fix_base_link = True
         cartpole_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
@@ -103,6 +103,11 @@ class Cartpole_Modified(VecTask):
             self.reset_dist, self.reset_buf, self.progress_buf, self.max_episode_length
         )
 
+    def draw_marker(self, location, color):
+        sphere_geom = gymutil.WireframeSphereGeometry(radius=0.1, num_lats=3, num_lons=3, pose=None, color=color)
+        pose = gymapi.Transform(gymapi.Vec3(location[0], location[1], location[2]))
+        gymutil.draw_lines(geom=sphere_geom, gym=self.gym, viewer=self.viewer, env=self.envs[0], pose=pose)
+
     def compute_observations(self, env_ids=None):
         if env_ids is None:
             env_ids = np.arange(self.num_envs)
@@ -133,6 +138,18 @@ class Cartpole_Modified(VecTask):
         self.progress_buf[env_ids] = 0
 
         self.commands[env_ids] = (torch.rand((len(env_ids), 1), device=self.device) * 2 - 1 ) * self.command_pos_range
+        
+        # draw marker
+        self.gym.clear_lines(self.viewer)
+        #  self.gym.refresh_actor_root_state_tensor(self.sim)
+
+        for i in range(self.num_envs):
+            origin = self.gym.get_env_origin(self.envs[i])
+            location = (origin.x, self.commands[i] + origin.y, 2.0)
+            #  location = (origin.x, origin.y, 2.0)
+            color = (1, 1, 0)
+            self.draw_marker(location=location, color=color)
+
 
     def pre_physics_step(self, actions):
         actions_tensor = torch.zeros(self.num_envs * self.num_dof, device=self.device, dtype=torch.float)
@@ -161,7 +178,7 @@ def compute_cartpole_reward(command, pole_angle, pole_vel, cart_vel, cart_pos,
     # type: (Tensor, Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, float) -> Tuple[Tensor, Tensor]
 
     # reward is combo of angle deviated from upright, velocity of cart, and velocity of pole moving
-    reward = 1.0 -  0.05 * pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel) - 0.75 * torch.abs(command - cart_pos)
+    reward = 1.0 -  0.05 * pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel) - 1.5 * torch.abs(command - cart_pos)
 
     # adjust reward for reset agents
     reward = torch.where(torch.abs(cart_pos) > reset_dist, torch.ones_like(reward) * -2.0, reward)
